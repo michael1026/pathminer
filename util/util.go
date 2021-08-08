@@ -3,7 +3,9 @@ package util
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"math/rand"
+	"path"
 )
 
 var letters = []rune("abcdefghijklmnopqrstuvwxyz")
@@ -15,6 +17,18 @@ func AppendIfMissing(slice []string, s string) []string {
 		}
 	}
 	return append(slice, s)
+}
+
+func AppendIfMissingFromChannel(channel chan string, s string) chan string {
+	fmt.Printf("fixing %s\n", s)
+	for ele := range channel {
+		if ele == s {
+			return channel
+		}
+	}
+	channel <- s
+
+	return channel
 }
 
 func RandSeq(n int) string {
@@ -54,4 +68,9 @@ func DeleteByKey(m *map[string]string, val string) {
 			delete(*m, k)
 		}
 	}
+}
+
+func ReplaceLastPath(url string, replacement string) string {
+	dir := path.Dir(url)
+	return path.Join(dir, replacement)
 }

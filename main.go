@@ -4,9 +4,13 @@ import (
 	"bufio"
 	"crypto/tls"
 	"flag"
+	"fmt"
+	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"regexp"
 	"sync"
 	"time"
@@ -30,7 +34,6 @@ func main() {
 
 	wordlistFile := flag.String("w", "", "Wordlist file")
 	threads := flag.Int("t", 20, "set the concurrency level (split equally between HTTPS and HTTP requests)")
-	url := flag.String("u", "", "Single URL to scan")
 
 	flag.Parse()
 
@@ -38,33 +41,37 @@ func main() {
 		wordlist, _ = readWordlistIntoFile(*wordlistFile)
 	}
 
-	client := BuildHttpClient()
-	urls := make(chan string)
+	client := buildHttpClient()
+	urlsToFuzz := make(chan string)
 
 	s := bufio.NewScanner(os.Stdin)
 
 	for i := 0; i < *threads; i++ {
 		wg.Add(1)
 
-		go findPaths(urls, wordlist, client, wg)
+		go func() {
+			for url := range urlsToFuzz {
+				findPaths(url, &wordlist, client, wg)
+			}
+			wg.Done()
+		}()
 	}
 
 	for s.Scan() {
-		urls <- s.Text()
+		wordlist = wordsFromURL(wordlist, s.Text())
+		urlsToFuzz <- path.Dir(s.Text())
+		fmt.Println("in scan")
 	}
 
-	if *url != "" {
-		urls <- *url
-	}
-
-	close(urls)
+	close(urlsToFuzz)
 
 	wg.Wait()
 }
 
-func findPaths(urls chan string, wordlist []string, client *http.Client, wg *sync.WaitGroup) {
-	for rawUrl := range urls {
-		wordlist = wordsFromURL(wordlist, rawUrl)
+func findPaths(url string, wordlist *[]string, client *http.Client, wg *sync.WaitGroup) {
+	fmt.Println(url)
+	if getStatus(client, url) == http.StatusOK {
+		fmt.Println(url)
 	}
 }
 
@@ -84,7 +91,7 @@ func wordsFromURL(words []string, url string) []string {
 	matches := re.FindAllStringSubmatch(url, -1)
 
 	for _, match := range matches {
-		words = append(words, match[0])
+		words = util.AppendIfMissing(words, match[0])
 	}
 
 	return words
@@ -113,7 +120,7 @@ func readWordlistIntoFile(wordlistPath string) ([]string, error) {
 	return lines, err
 }
 
-func BuildHttpClient() (c *http.Client) {
+func buildHttpClient() (c *http.Client) {
 	fastdialerOpts := fastdialer.DefaultOptions
 	fastdialerOpts.EnableFallback = true
 	dialer, err := fastdialer.NewDialer(fastdialerOpts)
@@ -140,4 +147,27 @@ func BuildHttpClient() (c *http.Client) {
 	}
 
 	return client
+}
+
+func getStatus(client *http.Client, url string) int {
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return -1
+	}
+
+	req.Header.Add("Connection", "close")
+	req.Close = true
+
+	resp, err := client.Do(req)
+	if resp != nil {
+		io.Copy(ioutil.Discard, resp.Body)
+		resp.Body.Close()
+	}
+
+	if err != nil {
+		return -1
+	}
+
+	return resp.StatusCode
 }
