@@ -9,6 +9,7 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"regexp"
@@ -20,17 +21,18 @@ import (
 )
 
 func main() {
-	// read urls from stdin
-	// generate wordlist from supplied urls
-	// fuzz using generated + user supplied wordlist
+	// read urls from stdin - Done
+	// generate wordlist from supplied urls - Done
+	// fuzz using generated + user supplied wordlist - Done
 	// with extension on last path (/xxx/yyy/FUZZ.php)
-	// without extension on last path (/xxx/yyy/FUZZ)
-	// remove path and try again (/xxx/FUZZ.php, /xxx/FUZZ, /FUZZ.php, /FUZZ)
-	// follow 301 redirect (/xxx -> /xxx/) and add this to list of urls to fuzz
-	// would be nice to detect duplicates when removing paths
+	// without extension on last path (/xxx/yyy/FUZZ) - Done
+	// remove path and try again (/xxx/FUZZ.php, /xxx/FUZZ, /FUZZ.php, /FUZZ) - Done
+	// follow 301 redirect (/xxx -> /xxx/) and add this to list of urls to fuzz - Done
+	// would be nice to detect duplicates when removing paths - Done
 
 	var wordlist []string
 	wg := &sync.WaitGroup{}
+	urlMap := make(map[string]struct{})
 
 	wordlistFile := flag.String("w", "", "Wordlist file")
 	threads := flag.Int("t", 20, "set the concurrency level (split equally between HTTPS and HTTP requests)")
@@ -50,17 +52,32 @@ func main() {
 		wg.Add(1)
 
 		go func() {
-			for url := range urlsToFuzz {
-				findPaths(url, &wordlist, client, wg)
+			for rawUrl := range urlsToFuzz {
+				findPaths(rawUrl, &wordlist, client)
 			}
 			wg.Done()
 		}()
 	}
 
 	for s.Scan() {
-		wordlist = wordsFromURL(wordlist, s.Text())
-		urlsToFuzz <- path.Dir(s.Text())
-		fmt.Println("in scan")
+		urlToAdd, _ := url.Parse(s.Text())
+		urlToAdd, _ = url.Parse(urlToAdd.Scheme + "://" + urlToAdd.Host + urlToAdd.Path)
+		wordlist = wordsFromURL(wordlist, urlToAdd.Path)
+		root := urlToAdd.Scheme + "://" + urlToAdd.Host + "/"
+
+		for root != urlToAdd.String() {
+			urlToAdd.Path = path.Dir(urlToAdd.Path)
+			if _, ok := urlMap[urlToAdd.String()]; !ok {
+
+				urlsToFuzz <- urlToAdd.String()
+				urlMap[urlToAdd.String()] = struct{}{}
+			}
+		}
+
+		if _, ok := urlMap[urlToAdd.String()]; !ok {
+			urlsToFuzz <- urlToAdd.String()
+			urlMap[urlToAdd.String()] = struct{}{}
+		}
 	}
 
 	close(urlsToFuzz)
@@ -68,11 +85,51 @@ func main() {
 	wg.Wait()
 }
 
-func findPaths(url string, wordlist *[]string, client *http.Client, wg *sync.WaitGroup) {
-	fmt.Println(url)
-	if getStatus(client, url) == http.StatusOK {
-		fmt.Println(url)
+func findPaths(rawUrl string, wordlist *[]string, client *http.Client) {
+	parsedUrl, _ := url.Parse(rawUrl)
+	for _, word := range *wordlist {
+		newUrl, _ := url.Parse(rawUrl)
+		path := path.Join(parsedUrl.Path, word)
+		newUrl.Path = path
+		status, redirect := getStatus(client, newUrl.String())
+
+		if status == http.StatusOK {
+			fmt.Println(newUrl.String())
+		}
+
+		if status == http.StatusMovedPermanently && redirect == newUrl.String()+"/" {
+			findPaths(newUrl.String(), wordlist, client)
+		}
 	}
+}
+
+func GetRedirectLocation(resp *http.Response, absolute bool) string {
+
+	redirectLocation := ""
+	if resp.StatusCode >= 300 && resp.StatusCode <= 399 {
+		if loc, ok := resp.Header["Location"]; ok {
+			if len(loc) > 0 {
+				redirectLocation = loc[0]
+			}
+		}
+	}
+
+	if absolute {
+		redirectUrl, err := url.Parse(redirectLocation)
+		if err != nil {
+			return redirectLocation
+		}
+		location, _ := resp.Location()
+		if location != nil {
+			baseUrl, err := url.Parse(location.String())
+			if err != nil {
+				return redirectLocation
+			}
+			redirectLocation = baseUrl.ResolveReference(redirectUrl).String()
+		}
+	}
+
+	return redirectLocation
 }
 
 func fuzzPath(url string) {
@@ -149,11 +206,11 @@ func buildHttpClient() (c *http.Client) {
 	return client
 }
 
-func getStatus(client *http.Client, url string) int {
+func getStatus(client *http.Client, url string) (int, string) {
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return -1
+		return -1, ""
 	}
 
 	req.Header.Add("Connection", "close")
@@ -166,8 +223,10 @@ func getStatus(client *http.Client, url string) int {
 	}
 
 	if err != nil {
-		return -1
+		return -1, ""
 	}
 
-	return resp.StatusCode
+	redirectUrl := GetRedirectLocation(resp, true)
+
+	return resp.StatusCode, redirectUrl
 }
