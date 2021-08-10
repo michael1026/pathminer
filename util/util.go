@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand"
 	"path"
+	"strings"
 )
 
 var letters = []rune("abcdefghijklmnopqrstuvwxyz")
@@ -73,4 +74,11 @@ func DeleteByKey(m *map[string]string, val string) {
 func ReplaceLastPath(url string, replacement string) string {
 	dir := path.Dir(url)
 	return path.Join(dir, replacement)
+}
+
+func SplitByCharAndTrimSpace(s, splitchar string) (result []string) {
+	for _, token := range strings.Split(s, splitchar) {
+		result = append(result, strings.TrimSpace(token))
+	}
+	return
 }

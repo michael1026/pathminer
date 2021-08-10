@@ -14,6 +14,7 @@ import (
 	"os"
 	"path"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,14 +34,23 @@ func main() {
 	var wordlist []string
 	wg := &sync.WaitGroup{}
 	urlMap := make(map[string]struct{})
+	extensions := []string{""}
 
 	wordlistFile := flag.String("w", "", "Wordlist file")
+	extensionsList := flag.String("e", "", "Comma separated list of extensions. Extends FUZZ keyword.")
 	threads := flag.Int("t", 20, "set the concurrency level (split equally between HTTPS and HTTP requests)")
 
 	flag.Parse()
 
 	if *wordlistFile != "" {
 		wordlist, _ = readWordlistIntoFile(*wordlistFile)
+	}
+
+	if *extensionsList != "" {
+		extensionsSplit := util.SplitByCharAndTrimSpace(*extensionsList, ",")
+		for _, ext := range extensionsSplit {
+			extensions = util.AppendIfMissing(extensions, ext)
+		}
 	}
 
 	client := buildHttpClient()
@@ -53,7 +63,7 @@ func main() {
 
 		go func() {
 			for rawUrl := range urlsToFuzz {
-				findPaths(rawUrl, &wordlist, client)
+				findPaths(rawUrl, &wordlist, &extensions, client)
 			}
 			wg.Done()
 		}()
@@ -64,6 +74,11 @@ func main() {
 		urlToAdd, _ = url.Parse(urlToAdd.Scheme + "://" + urlToAdd.Host + urlToAdd.Path)
 		wordlist = wordsFromURL(wordlist, urlToAdd.Path)
 		root := urlToAdd.Scheme + "://" + urlToAdd.Host + "/"
+
+		ext := grabExtension(urlToAdd.Path)
+		if ext != "" {
+			extensions = util.AppendIfMissing(extensions, ext)
+		}
 
 		if urlToAdd.Path == "" {
 			urlToAdd.Path = "/"
@@ -89,7 +104,7 @@ func main() {
 	wg.Wait()
 }
 
-func findPaths(rawUrl string, wordlist *[]string, client *http.Client) {
+func findPaths(rawUrl string, wordlist *[]string, extensions *[]string, client *http.Client) {
 	parsedUrl, _ := url.Parse(rawUrl)
 	preStatusParsed, _ := url.Parse(rawUrl)
 	preStatusParsed.Path = path.Join(preStatusParsed.Path, util.RandSeq(5))
@@ -97,17 +112,25 @@ func findPaths(rawUrl string, wordlist *[]string, client *http.Client) {
 
 	if preStatus != http.StatusOK {
 		for _, word := range *wordlist {
-			newUrl, _ := url.Parse(rawUrl)
-			path := path.Join(parsedUrl.Path, word)
-			newUrl.Path = path
-			status, redirect := getStatus(client, newUrl.String())
+			for _, ext := range *extensions {
+				newUrl, _ := url.Parse(rawUrl)
+				path := path.Join(parsedUrl.Path, word+ext)
+				newUrl.Path = path
+				status, redirect := getStatus(client, newUrl.String())
 
-			if status == http.StatusOK {
-				fmt.Println(newUrl.String())
-			}
+				if status == http.StatusOK {
+					fmt.Println(newUrl.String())
+				}
 
-			if status == http.StatusMovedPermanently && redirect == newUrl.String()+"/" {
-				findPaths(newUrl.String(), wordlist, client)
+				if status == http.StatusMovedPermanently && redirect == newUrl.String()+"/" {
+					status, _ := getStatus(client, newUrl.String()+"/")
+
+					if status == http.StatusOK {
+						fmt.Println(newUrl.String())
+					}
+
+					findPaths(newUrl.String(), wordlist, extensions, client)
+				}
 			}
 		}
 	}
@@ -233,4 +256,19 @@ func getStatus(client *http.Client, url string) (int, string) {
 	redirectUrl := GetRedirectLocation(resp, true)
 
 	return resp.StatusCode, redirectUrl
+}
+
+func grabExtension(path string) string {
+	extensions :=
+		[]string{".php", ".jsp", ".asp", ".aspx",
+			".cgi", ".cfm", ".do", ".go", ".action",
+			".axd", ".asmx", ".asx", ".ashx", ".aspx",
+			".phtml", ".xhtml"}
+
+	for _, ext := range extensions {
+		if strings.HasSuffix(path, ext) {
+			return ext
+		}
+	}
+	return ""
 }
