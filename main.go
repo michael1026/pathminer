@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/ioutil"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,7 +18,6 @@ import (
 	"time"
 
 	"github.com/michael1026/pathminer/util"
-	"github.com/projectdiscovery/fastdialer/fastdialer"
 )
 
 func main() {
@@ -65,6 +65,10 @@ func main() {
 		wordlist = wordsFromURL(wordlist, urlToAdd.Path)
 		root := urlToAdd.Scheme + "://" + urlToAdd.Host + "/"
 
+		if urlToAdd.Path == "" {
+			urlToAdd.Path = "/"
+		}
+
 		for root != urlToAdd.String() {
 			urlToAdd.Path = path.Dir(urlToAdd.Path)
 			if _, ok := urlMap[urlToAdd.String()]; !ok {
@@ -87,18 +91,24 @@ func main() {
 
 func findPaths(rawUrl string, wordlist *[]string, client *http.Client) {
 	parsedUrl, _ := url.Parse(rawUrl)
-	for _, word := range *wordlist {
-		newUrl, _ := url.Parse(rawUrl)
-		path := path.Join(parsedUrl.Path, word)
-		newUrl.Path = path
-		status, redirect := getStatus(client, newUrl.String())
+	preStatusParsed, _ := url.Parse(rawUrl)
+	preStatusParsed.Path = path.Join(preStatusParsed.Path, util.RandSeq(5))
+	preStatus, _ := getStatus(client, preStatusParsed.String())
 
-		if status == http.StatusOK {
-			fmt.Println(newUrl.String())
-		}
+	if preStatus != http.StatusOK {
+		for _, word := range *wordlist {
+			newUrl, _ := url.Parse(rawUrl)
+			path := path.Join(parsedUrl.Path, word)
+			newUrl.Path = path
+			status, redirect := getStatus(client, newUrl.String())
 
-		if status == http.StatusMovedPermanently && redirect == newUrl.String()+"/" {
-			findPaths(newUrl.String(), wordlist, client)
+			if status == http.StatusOK {
+				fmt.Println(newUrl.String())
+			}
+
+			if status == http.StatusMovedPermanently && redirect == newUrl.String()+"/" {
+				findPaths(newUrl.String(), wordlist, client)
+			}
 		}
 	}
 }
@@ -178,30 +188,23 @@ func readWordlistIntoFile(wordlistPath string) ([]string, error) {
 }
 
 func buildHttpClient() (c *http.Client) {
-	fastdialerOpts := fastdialer.DefaultOptions
-	fastdialerOpts.EnableFallback = true
-	dialer, err := fastdialer.NewDialer(fastdialerOpts)
-	if err != nil {
-		return
-	}
-
-	transport := &http.Transport{
-		MaxIdleConns:      100,
-		IdleConnTimeout:   time.Second * 10,
-		TLSClientConfig:   &tls.Config{InsecureSkipVerify: true},
-		DisableKeepAlives: true,
-		DialContext:       dialer.Dial,
-	}
-
-	re := func(req *http.Request, via []*http.Request) error {
-		return http.ErrUseLastResponse
-	}
-
 	client := &http.Client{
-		Transport:     transport,
-		CheckRedirect: re,
-		Timeout:       time.Second * 10,
-	}
+		CheckRedirect: nil,
+		Timeout:       time.Duration(time.Duration(10) * time.Second),
+		Transport: &http.Transport{
+			MaxIdleConns:        1000,
+			MaxIdleConnsPerHost: 500,
+			MaxConnsPerHost:     500,
+			DialContext: (&net.Dialer{
+				Timeout: time.Duration(time.Duration(10) * time.Second),
+			}).DialContext,
+			TLSHandshakeTimeout: time.Duration(time.Duration(10) * time.Second),
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				Renegotiation:      tls.RenegotiateOnceAsClient,
+				ServerName:         "",
+			},
+		}}
 
 	return client
 }
@@ -219,12 +222,13 @@ func getStatus(client *http.Client, url string) (int, string) {
 	resp, err := client.Do(req)
 	if resp != nil {
 		io.Copy(ioutil.Discard, resp.Body)
-		resp.Body.Close()
 	}
 
 	if err != nil {
 		return -1, ""
 	}
+
+	resp.Body.Close()
 
 	redirectUrl := GetRedirectLocation(resp, true)
 
