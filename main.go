@@ -22,15 +22,6 @@ import (
 )
 
 func main() {
-	// read urls from stdin - Done
-	// generate wordlist from supplied urls - Done
-	// fuzz using generated + user supplied wordlist - Done
-	// with extension on last path (/xxx/yyy/FUZZ.php)
-	// without extension on last path (/xxx/yyy/FUZZ) - Done
-	// remove path and try again (/xxx/FUZZ.php, /xxx/FUZZ, /FUZZ.php, /FUZZ) - Done
-	// follow 301 redirect (/xxx -> /xxx/) and add this to list of urls to fuzz - Done
-	// would be nice to detect duplicates when removing paths - Done
-
 	var wordlist []string
 	wg := &sync.WaitGroup{}
 	urlMap := make(map[string]struct{})
@@ -114,19 +105,30 @@ func findPaths(rawUrl string, wordlist *[]string, extensions *[]string, client *
 		for _, word := range *wordlist {
 			for _, ext := range *extensions {
 				newUrl, _ := url.Parse(rawUrl)
-				path := path.Join(parsedUrl.Path, word+ext)
-				newUrl.Path = path
+				newPath := path.Join(parsedUrl.Path, word+ext)
+				newUrl.Path = newPath
 				status, redirect := getStatus(client, newUrl.String())
 
 				if status == http.StatusOK {
+					if ext == "" {
+						fmt.Println(newUrl.String())
+					}
+					wildcardTestUrl, _ := url.Parse(rawUrl)
+					wildcardTestUrl.Path = path.Join(wildcardTestUrl.Path, word+"."+util.RandSeq(4))
+
+					// if something like example.php was a 200, but so is example.xyz, then we're ignoring the original
+					if wildcardStatus, _ := getStatus(client, wildcardTestUrl.String()); wildcardStatus == http.StatusOK {
+						continue
+					}
+
 					fmt.Println(newUrl.String())
 				}
 
 				if status == http.StatusMovedPermanently && redirect == newUrl.String()+"/" {
-					status, _ := getStatus(client, newUrl.String()+"/")
+					status, _ := getStatus(client, redirect)
 
 					if status == http.StatusOK {
-						fmt.Println(newUrl.String())
+						fmt.Println(redirect)
 					}
 
 					findPaths(newUrl.String(), wordlist, extensions, client)
