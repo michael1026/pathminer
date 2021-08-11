@@ -112,6 +112,7 @@ func findPaths(rawUrl string, wordlist *[]string, extensions *[]string, client *
 				if status == http.StatusOK {
 					if ext == "" {
 						fmt.Println(newUrl.String())
+						continue
 					}
 					wildcardTestUrl, _ := url.Parse(rawUrl)
 					wildcardTestUrl.Path = path.Join(wildcardTestUrl.Path, word+"."+util.RandSeq(4))
@@ -167,14 +168,6 @@ func GetRedirectLocation(resp *http.Response, absolute bool) string {
 	return redirectLocation
 }
 
-func fuzzPath(url string) {
-
-}
-
-func fuzzPathWithExt(url string, ext string) {
-
-}
-
 func wordsFromURL(words []string, url string) []string {
 	regex := "[A-Za-z]+"
 
@@ -214,8 +207,10 @@ func readWordlistIntoFile(wordlistPath string) ([]string, error) {
 
 func buildHttpClient() (c *http.Client) {
 	client := &http.Client{
-		CheckRedirect: nil,
-		Timeout:       time.Duration(time.Duration(10) * time.Second),
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+		Timeout: time.Duration(time.Duration(10) * time.Second),
 		Transport: &http.Transport{
 			MaxIdleConns:        1000,
 			MaxIdleConnsPerHost: 500,
@@ -242,6 +237,7 @@ func getStatus(client *http.Client, url string) (int, string) {
 	}
 
 	req.Header.Add("Connection", "close")
+	req.Header.Set("User-Agent", "SomeGoProgram")
 	req.Close = true
 
 	resp, err := client.Do(req)
@@ -255,7 +251,7 @@ func getStatus(client *http.Client, url string) (int, string) {
 
 	resp.Body.Close()
 
-	redirectUrl := GetRedirectLocation(resp, true)
+	redirectUrl := GetRedirectLocation(resp, false)
 
 	return resp.StatusCode, redirectUrl
 }
